@@ -7,9 +7,12 @@
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
-#include <d3dcompiler.h>
+#include <D3Dcompiler.h>
 #include <DirectXMath.h>
 #include "d3dx12.h"
+#include <string>
+#include <filesystem>
+#include <ShlObj.h>
 
 // this will only call release if an object exists (prevents exceptions calling release on non existant objects)
 #define SAFE_RELEASE(p) { if ( (p) ) { (p)->Release(); (p) = 0; } }
@@ -70,5 +73,20 @@ void Render(); // execute the command list
 void Cleanup(); // release com objects and clean up memory
 
 void WaitForPreviousFrame(); // wait until gpu is finished with command list
+
+ID3D12PipelineState* pipelineStateObject; // PSO containing a pipeline state
+
+ID3D12RootSignature* rootSignature; // root signature defines data shaders will access
+
+D3D12_VIEWPORT viewport; // area that output from rasterizer will be stretched to
+
+D3D12_RECT scissorRect; // the area to draw in. pixels outside that area will not be drawn onto
+
+ID3D12Resource* vertexBuffer; // a default buffer in GPU memory that we will load vertex data for our triangle into
+
+D3D12_VERTEX_BUFFER_VIEW vertexBufferView; // a structure containing a pointer to the vertex data in gpu memory
+										   // the total size of the buffer, and the size of each element (vertex)
+
+std::wstring GetLatestWinPixGpuCapturerPath();
 
 
