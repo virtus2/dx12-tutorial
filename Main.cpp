@@ -4,7 +4,7 @@ using namespace DirectX; // we will be using the directxmath library
 
 struct Vertex
 {
-	Vertex(float x, float y, float z, float r, float g, float b, float a) : pos(x, y, z), color(r, g, b, z) {}
+	Vertex(float x, float y, float z, float r, float g, float b, float a) : pos(x, y, z), color(r, g, b, a) {}
 	XMFLOAT3 pos;
 	XMFLOAT4 color;
 };
@@ -168,8 +168,8 @@ bool InitD3D()
 
 	// -- Create a direct command queue -- //
 	D3D12_COMMAND_QUEUE_DESC cqDesc = {};
-	// cqDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-	// cqDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT; // direct means the gpu can directly execute this command queue
+	cqDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+	cqDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT; // direct means the gpu can directly execute this command queue
 
 	hr = device->CreateCommandQueue(&cqDesc, IID_PPV_ARGS(&commandQueue));
 	if (FAILED(hr)) return false;
@@ -195,7 +195,8 @@ bool InitD3D()
 
 	IDXGISwapChain* tempSwapChain;
 
-	dxgiFactory->CreateSwapChain(
+	dxgiFactory->CreateSwapChain
+	(
 		commandQueue, // the queue will be flushed once the swap chain is created
 		&swapChainDesc, // give it the swap chain description we created above
 		&tempSwapChain // store the created swap chain in a temp IDXGISwapChain interface
@@ -248,7 +249,7 @@ bool InitD3D()
 
 	// -- Create the command list -- //
 	// create the command list with the first allocator
-    hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator[0], NULL, IID_PPV_ARGS(&commandList));
+    hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator[frameIndex], NULL, IID_PPV_ARGS(&commandList));
 	if (FAILED(hr)) return false;
 
 	// -- Create a Fence & Fence Event -- //
@@ -363,9 +364,10 @@ bool InitD3D()
 	// a triangle
 	Vertex vList[] = 
 	{
-		{ 0.0f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
-		{ 0.5f, -0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
+		{ -0.5f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
+		{  0.5f, -0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
 		{ -0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
+		{  0.5f, 0.5f, 0.5f, 1.0f, 0.0f, 1.0f, 1.0f }
 	};
 	int vBufferSize = sizeof(vList);
 
@@ -386,6 +388,7 @@ bool InitD3D()
 	);
 	// we can give resource heaps a name so when we debug with the graphics debugger we know what resource we are looking at
 	vertexBuffer->SetName(L"Vertex Buffer Resource Heap");
+
 
 	// -- Create upload heap -- //
 	// upload heaps are used to upload data to the GPU. CPU can write to it, GPU can read from it
@@ -412,8 +415,57 @@ bool InitD3D()
 	// the upload heap to the default heap
 	UpdateSubresources(commandList, vertexBuffer, vBufferUploadHeap, 0, 0, 1, &vertexData);
 
-	// transition the vertex buffer data from copy destination state to vertex buffet state
+	// transition the vertex buffer data from copy destination state to vertex buffer state
 	commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(vertexBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+
+	// -- Create index buffer -- //
+	// a quad (2 triangles)
+	DWORD iList[] =
+	{
+		0, 1, 2, // first triangle
+		0, 3, 1 // second triangle
+	};
+	int iBufferSize = sizeof(iList);
+
+	// create default heap to hold index buffer
+	device->CreateCommittedResource
+	(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), // a default heap
+		D3D12_HEAP_FLAG_NONE, // no flags
+		&CD3DX12_RESOURCE_DESC::Buffer(iBufferSize), // resource description for a buffer
+		D3D12_RESOURCE_STATE_COPY_DEST, // start in the copy destination state
+		nullptr, // optimized clear value must be null for this type of resource
+		IID_PPV_ARGS(&indexBuffer)
+	);
+
+	// we can give resource heaps a name so when we debug with the graphics debugger we know what resource we are looking at
+	indexBuffer->SetName(L"Index Buffer Resource Heap");
+
+	// create upload heap to upload index buffer
+	ID3D12Resource* iBufferUploadHeap;
+	device->CreateCommittedResource
+	(
+		&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), // upload heap
+		D3D12_HEAP_FLAG_NONE, // no flags
+		&CD3DX12_RESOURCE_DESC::Buffer(iBufferSize), // resource description for a buffer
+		D3D12_RESOURCE_STATE_GENERIC_READ, // GPU will read from this buffer and copy its contents to the default heap
+		nullptr,
+		IID_PPV_ARGS(&iBufferUploadHeap)
+	);
+	iBufferUploadHeap->SetName(L"Index Buffer Upload Resource Heap");
+
+	// store vertex buffer in upload heap
+	D3D12_SUBRESOURCE_DATA indexData = {};
+	indexData.pData = reinterpret_cast<BYTE*>(iList); // pointer to our index array
+	indexData.RowPitch = iBufferSize; // size of all our index buffer
+	indexData.SlicePitch = iBufferSize; // also the size of our index buffer
+
+	// we are now creating a command with the command list to copy the data from
+	// the upload heap to the default heap
+	UpdateSubresources(commandList, indexBuffer, iBufferUploadHeap, 0, 0, 1, &indexData);
+
+	// transition the vertex buffer data from copy destination state to vertex buffer state
+	commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(indexBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER));
 
 	// Now we execute the command list to upload the initial assets (triangle data)
 	commandList->Close();
@@ -429,6 +481,11 @@ bool InitD3D()
 	vertexBufferView.BufferLocation = vertexBuffer->GetGPUVirtualAddress();
 	vertexBufferView.StrideInBytes = sizeof(Vertex);
 	vertexBufferView.SizeInBytes = vBufferSize;
+
+	// create a vertex buffer view for the triangle. We get the GPU memory address to the vertex pointer using the GetGPUVirtualAddress() method
+	indexBufferView.BufferLocation = indexBuffer->GetGPUVirtualAddress();
+	indexBufferView.Format = DXGI_FORMAT_R32_UINT; // 32-bit unsigned integer (this is what a dword is, double word, a word is 2 bytes)
+	indexBufferView.SizeInBytes = iBufferSize;
 
 
 	// -- Fill out a Viewport and Scissor Rect -- //
@@ -500,7 +557,8 @@ void UpdatePipeline()
 	commandList->RSSetScissorRects(1, &scissorRect); // set the scissor rects
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // set the primitive topology
 	commandList->IASetVertexBuffers(0, 1, &vertexBufferView); // set the vertex buffer(using vertex buffer view)
-	commandList->DrawInstanced(3, 1, 0, 0);
+	commandList->IASetIndexBuffer(&indexBufferView);
+	commandList->DrawIndexedInstanced(6, 1, 0, 0, 0); // draw 2 triangles (draw 1 instance of 2 triangles)
 
 	// transition the "frameIndex" render target from the render target state to the present state. If the debug layer is enabled, you will receive a
 	// warning if present is called on the render target when it's not in the present state
@@ -563,6 +621,7 @@ void Cleanup()
 	SAFE_RELEASE(pipelineStateObject);
 	SAFE_RELEASE(rootSignature);
 	SAFE_RELEASE(vertexBuffer);
+	SAFE_RELEASE(indexBuffer);
 }
 
 void WaitForPreviousFrame()
