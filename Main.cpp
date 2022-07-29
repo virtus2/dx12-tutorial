@@ -266,8 +266,37 @@ bool InitD3D()
 	if (fenceEvent == nullptr) return false;
 
 	// -- Create root signature -- //
+	// create a descriptor range (descriptor table) and fill it out
+	// this is a range of descriptors inside a descriptor heap
+	D3D12_DESCRIPTOR_RANGE descriptorTableRanges[1]; // only one range right now
+	descriptorTableRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV; // this is a range 
+	descriptorTableRanges[0].NumDescriptors = 1; // we only have one constant buffer, so the range is only 1
+	descriptorTableRanges[0].BaseShaderRegister = 0; // start index of the shader registers in the range
+	descriptorTableRanges[0].RegisterSpace = 0; // space 0. can usually be zero
+	descriptorTableRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND; // this appends the range to the end of the root signature descriptor tables
+
+	// create a descriptor table
+	D3D12_ROOT_DESCRIPTOR_TABLE descriptorTable;
+	descriptorTable.NumDescriptorRanges = _countof(descriptorTableRanges); // we only have on raange
+	descriptorTable.pDescriptorRanges = &descriptorTableRanges[0]; // the pointer to the beginning of our ranges array
+
+	// create a root parameter and fill it out
+	D3D12_ROOT_PARAMETER rootParameters[1]; // only one parameter right now
+	rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; // this is a descriptor table
+	rootParameters[0].DescriptorTable = descriptorTable; // this is our descriptor table for this root parameter
+	rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX; // our pixel shader will be the only shader accessing this parameter for now
+	
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-	rootSignatureDesc.Init(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+	rootSignatureDesc.Init(_countof(rootParameters), // we have 1 root parameter
+		rootParameters, 
+		0, 
+		nullptr, 
+		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+		D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+		D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+		D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
+		D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS
+	);
 
 	ID3DBlob* signature;
 	hr = D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr);
@@ -365,16 +394,10 @@ bool InitD3D()
 	// a triangle
 	Vertex vList[] = {
 		// first quad (closer to camera, blue)
-		{ -0.5f,  0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-		{  0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
+		{ -0.5f,  0.5f, 0.5f, 1.0f, 0.0f, 0.0f, 1.0f },
+		{  0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 1.0f, 1.0f },
 		{ -0.5f, -0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-		{  0.5f,  0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 1.0f },
-
-		// second quad (further from camera, green)
-		{ -0.75f,  0.75f,  0.7f, 0.0f, 1.0f, 0.0f, 1.0f },
-		{   0.0f,  0.0f, 0.7f, 0.0f, 1.0f, 0.0f, 1.0f },
-		{ -0.75f,  0.0f, 0.7f, 0.0f, 1.0f, 0.0f, 1.0f },
-		{   0.0f,  0.75f,  0.7f, 0.0f, 1.0f, 0.0f, 1.0f }
+		{  0.5f,  0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f }
 	};
 	int vBufferSize = sizeof(vList);
 
@@ -509,6 +532,49 @@ bool InitD3D()
 
 	device->CreateDepthStencilView(depthStencilBuffer, &depthStencilDesc, dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 
+	// Create a constant buffer descriptor heap for each frame
+	// this is the descriptor heap that will store our constant buffer descriptor
+	for(int i=0; i<frameBufferCount; i++)
+	{
+		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+		heapDesc.NumDescriptors = 1;
+		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+		hr = device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&mainDescriptorHeap[i]));
+		if (FAILED(hr)) Running = false;
+	}
+
+	// create the constant buffer resource heap
+	// We will update the constant buffer one or more times per frame, so we will use only an upload heap
+	// unlike previously we used an upload heap to upload the vertex and index data, and then copied over
+	// to a default heap. If you plan to use a resource for more than a couple frames, it is usually more
+	// efficient to copy to a default heap where it stays on the gpu. In this case, our constant buffer
+	// will be modified and uploaded at least once per frame, so we only use an upload heap
+
+	// create a resource heap, descriptor heap, and pointer to cbv for each frame
+	for (int i = 0; i < frameBufferCount; ++i)
+	{
+		hr = device->CreateCommittedResource(
+			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), // this heap will be used to upload the constant buffer data
+			D3D12_HEAP_FLAG_NONE, // no flags
+			&CD3DX12_RESOURCE_DESC::Buffer(1024 * 64), // size of the resource heap. Must be a multiple of 64KB for single-textures and constant buffers
+			D3D12_RESOURCE_STATE_GENERIC_READ, // will be data that is read from so we keep it in the generic read state
+			nullptr, // we do not have use an optimized clear value for constant buffers
+			IID_PPV_ARGS(&constantBufferUploadHeap[i]));
+		constantBufferUploadHeap[i]->SetName(L"Constant Buffer Upload Resource Heap");
+
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+		cbvDesc.BufferLocation = constantBufferUploadHeap[i]->GetGPUVirtualAddress();
+		cbvDesc.SizeInBytes = (sizeof(ConstantBuffer) + 255) & ~255;    // CB size is required to be 256-byte aligned.
+		device->CreateConstantBufferView(&cbvDesc, mainDescriptorHeap[i]->GetCPUDescriptorHandleForHeapStart());
+
+		ZeroMemory(&cbColorMultiplierData, sizeof(cbColorMultiplierData));
+
+		CD3DX12_RANGE readRange(0, 0);    // We do not intend to read from this resource on the CPU. (End is less than or equal to begin)
+		hr = constantBufferUploadHeap[i]->Map(0, &readRange, reinterpret_cast<void**>(&cbColorMultiplierGPUAddress[i]));
+		memcpy(cbColorMultiplierGPUAddress[i], &cbColorMultiplierData, sizeof(cbColorMultiplierData));
+	}
+
 	// Now we execute the command list to upload the initial assets (triangle data)
 	commandList->Close();
 	ID3D12CommandList* ppCommandLists[] = { commandList };
@@ -551,6 +617,32 @@ bool InitD3D()
 void Update()
 {
 	// update app logic, such as moving the camera or figuring out what objects are in view
+	static float rIncrement = 0.00002f;
+	static float gIncrement = 0.00006f;
+	static float bIncrement = 0.00009f;
+
+	cbColorMultiplierData.colorMultiplier.x += rIncrement;
+	cbColorMultiplierData.colorMultiplier.y += gIncrement;
+	cbColorMultiplierData.colorMultiplier.z += bIncrement;
+
+	if (cbColorMultiplierData.colorMultiplier.x >= 1.0 || cbColorMultiplierData.colorMultiplier.x <= 0.0)
+	{
+		cbColorMultiplierData.colorMultiplier.x = cbColorMultiplierData.colorMultiplier.x >= 1.0 ? 1.0 : 0.0;
+		rIncrement = -rIncrement;
+	}
+	if (cbColorMultiplierData.colorMultiplier.y >= 1.0 || cbColorMultiplierData.colorMultiplier.y <= 0.0)
+	{
+		cbColorMultiplierData.colorMultiplier.y = cbColorMultiplierData.colorMultiplier.y >= 1.0 ? 1.0 : 0.0;
+		gIncrement = -gIncrement;
+	}
+	if (cbColorMultiplierData.colorMultiplier.z >= 1.0 || cbColorMultiplierData.colorMultiplier.z <= 0.0)
+	{
+		cbColorMultiplierData.colorMultiplier.z = cbColorMultiplierData.colorMultiplier.z >= 1.0 ? 1.0 : 0.0;
+		bIncrement = -bIncrement;
+	}
+
+	// copy our ConstantBuffer instance to the mapped constant buffer resource
+	memcpy(cbColorMultiplierGPUAddress[frameIndex], &cbColorMultiplierData, sizeof(cbColorMultiplierData));
 }
 
 void UpdatePipeline()
@@ -598,6 +690,16 @@ void UpdatePipeline()
 
 	// clear the depth/stencil buffer
 	commandList->ClearDepthStencilView(dsDescriptorHeap->GetCPUDescriptorHandleForHeapStart(), D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+	// set root signature
+	commandList->SetGraphicsRootSignature(rootSignature); // set the root signature
+
+	// set constant buffer descriptor heap
+	ID3D12DescriptorHeap* descriptorHeaps[] = { mainDescriptorHeap[frameIndex] };
+	commandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+
+	// set the root descriptor table 0 to the constant buffer descriptor heap
+	commandList->SetGraphicsRootDescriptorTable(0, mainDescriptorHeap[frameIndex]->GetGPUDescriptorHandleForHeapStart());
 
 	// draw triangle
 	commandList->SetGraphicsRootSignature(rootSignature); // set the root signature
@@ -665,6 +767,9 @@ void Cleanup()
 		SAFE_RELEASE(renderTargets[i]);
 		SAFE_RELEASE(commandAllocator[i]);
 		SAFE_RELEASE(fence[i]);
+
+		SAFE_RELEASE(mainDescriptorHeap[i]);
+		SAFE_RELEASE(constantBufferUploadHeap[i]);
 	};
 
 	SAFE_RELEASE(pipelineStateObject);
